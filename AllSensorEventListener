@@ -1,0 +1,217 @@
+package ca.uwaterloo.lab4_202_11;
+
+import mapper.MapView;
+import mapper.NavigationalMap;
+import android.content.Context;
+import android.graphics.PointF;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.widget.TextView;
+
+public class AllSensorEventListener implements SensorEventListener {
+	Context main;	// holds reference to the mainActivity context
+	
+	// Labels and graph to display values
+	TextView steplabel;
+	TextView displacementLabel;
+	//LineGraphView graph;
+	//float[] graphArray = new float[2];	// Used to display values on graph
+	
+	// Sensor Values
+	float[] linearAccelValues;
+	float[] accelValues;
+	float[] magneticValues;
+	
+	// paused = true
+	public static boolean pause = false;
+	
+	// Steps
+	int step = 0;
+	// Accelerometer Filter Data
+	float smoothedAccel = 0;
+	boolean useUpper = true;	// Determine state 
+	float C= 7.5f;	// Low pass constant
+	float HIGH_VALUE = 1.7f;
+	float LOW_VALUE = 0f;
+	
+	// Compass reading and displacement
+	float azimutValue;
+	float filteredAzimut;
+	float displacementEast = 0;
+	float displacementNorth = 0;
+	float totalDisplacement = 0;
+	// Orientation Filter Data
+	float upperLimit;
+	float lowerLimit;
+	float PI = (float) Math.PI;
+	float THRESHOLD = 0.5f;
+	PointF coord= new PointF();
+	PointF direct = new PointF();
+	
+	
+	MapView mapView;
+	NavigationalMap navMap;
+	PathFinder route;
+	
+	// Constructor
+	public AllSensorEventListener(Context context, TextView steps, TextView displacement, MapView mv, NavigationalMap navMap){
+		main = context;
+		steplabel = steps;
+		displacementLabel = displacement;
+		//this.graph = graph;
+		this.navMap = navMap;
+		mapView = mv;
+	
+		
+		route = new PathFinder(mapView,navMap);
+		
+		
+		// Initial limits 
+		upperLimit = 0;
+		lowerLimit = 0;
+
+	}
+	
+	public void onAccuracyChanged(Sensor s, int i) {}
+		
+	public void onSensorChanged(SensorEvent event) {
+		// Accelerometer Sensor
+		if (event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {		
+			linearAccelValues = event.values;
+			// Low pass filter
+			smoothedAccel += (event.values[2] - smoothedAccel) / C;
+			// Only process and display values if app is not paused
+			if(!pause) {
+				processStep(smoothedAccel);
+				steplabel.setText("\nSteps: "+step+
+						"\n displacement North: "+displacementNorth+
+						"\n displacement East: "+displacementEast+
+						"\n total displacement: "+totalDisplacement);
+				// Graph
+				/*graphArray[0] = linearAccelValues[2];
+				graphArray[1] = smoothedAccel;
+				graph(graphArray); */
+				coord = MainActivity.mapView.getUserPoint();
+				//direct = getUserPoint()
+			
+			}
+			
+			
+		}
+		// Raw Accelerometer Sensor
+		if(event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+			accelValues = event.values;
+		}
+		// Magnetic Field Sensor
+		if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
+			magneticValues = event.values;		
+		}
+		
+		// Process displacement
+		if(accelValues!=null && magneticValues!=null) {
+			float[] R = new float[9];
+			float[] I = new float[9];
+			boolean success = SensorManager.getRotationMatrix(R, I, accelValues, magneticValues);
+			if(success) {
+				float[] orientation = new float[3];
+				SensorManager.getOrientation(R, orientation);
+				azimutValue = orientation[0];
+				filterOrientation(azimutValue);
+				displacementLabel.setText("Filtered Azimut: "+String.valueOf(filteredAzimut));
+			}
+		}
+	}
+	
+	// Process the values and manage states
+	public void processStep(float value) {
+		if(useUpper) {
+			if(value > HIGH_VALUE) {
+				step++;
+				displacementNorth += (Math.cos(filteredAzimut));
+				displacementEast += (Math.sin(filteredAzimut));
+				totalDisplacement = (float) (Math.sqrt((displacementEast * displacementEast + displacementNorth * displacementNorth)));
+				determinePosition();
+				useUpper = false;
+			}
+		}
+		else {
+			if(value < LOW_VALUE) {
+				useUpper = true;
+			}
+		}
+	}
+	
+	public void determinePosition() {
+		PointF userPoint = mapView.getUserPoint();
+		Node node = new Node((int) userPoint.x, (int) userPoint.y);
+		node.x+=displacementEast;
+		node.y+=displacementNorth;
+		if(mapView.getOriginPoint() !=null) {
+			if(mapView.getDestinationPoint() != null) {
+				route.calculateRoute(node);
+			}
+		}
+	}
+	
+	public float lowPassFilter(float input) {
+		return (input - smoothedAccel) / C;
+	}
+	
+	public void filterOrientation(float azimut) {
+		// If the orientation value is within the limits, do not change the filtered orientation value
+		/*if(azimut <= upperLimit && azimut >= lowerLimit) {
+			//filteredAzimut = azimut;
+			//upperLimit = filteredAzimut + THRESHOLD;
+			//lowerLimit = filteredAzimut - THRESHOLD;
+		}*/
+		
+		// If the orientation value is outside the limits, update filtered orientation and limits
+		if(azimut >upperLimit || azimut < lowerLimit) {
+			filteredAzimut = azimut;
+			upperLimit = filteredAzimut + THRESHOLD;
+			lowerLimit = filteredAzimut - THRESHOLD;
+			// Consider cases if limits cross the South bearing
+			if(lowerLimit < (PI*-1)) {
+				lowerLimit += (2*PI);
+			}
+			if(upperLimit > PI) {
+				upperLimit -= (2*PI);
+			}
+			//Log.d("TEST", "Upper: "+upperLimit+" | filtered: "+filteredAzimut+" | Lower: "+lowerLimit);
+
+		}
+	}
+	// Graph
+	/*public void graph (float[] points) {
+		graph.addPoint(points);
+	}
+	*/
+	// Pause
+	public static boolean pause(){
+		if(pause == false) pause = true;
+		else if(pause == true) pause = false;
+		return pause;
+	}
+	
+	// Clear steps
+	public boolean reset() {
+		step = 0;
+		displacementNorth = 0;
+		displacementEast = 0;
+		totalDisplacement = 0;
+		
+		return true;
+	}
+	
+	public void setOrigin(PointF origin) {
+		Node originNode = new Node((int)origin.x,(int)origin.y);
+		route.setOrigin(originNode);
+	}
+	
+	public void setDestination(PointF destination) {
+		Node destinationNode = new Node((int)destination.x,(int)destination.y);
+		route.setDestination(destinationNode);
+	}
+}
